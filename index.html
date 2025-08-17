@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>PDF Viewer</title>
+  <style>
+    /* Full-bleed, no UI */
+    html, body {
+      margin: 0; padding: 0; height: 100%; background: #000; touch-action: pan-y; overscroll-behavior: none;
+    }
+    #stage {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      background: #000;
+    }
+    canvas {
+      display: block; width: 100vw; height: auto; background: #000;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="page"></canvas></div>
+
+  <!-- PDF.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script>
+    // ====== Config ======
+    const DEFAULT_FILE = 'access.pdf'; // 同じ階層に置くPDF名
+    const START_PAGE = 1;              // 初期ページ
+    // ====================
+
+    // Worker
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    const urlParams = new URLSearchParams(location.search);
+    const pdfUrl = urlParams.get('file') || DEFAULT_FILE;
+
+    const canvas = document.getElementById('page');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    let pdfDoc = null;
+    let current = START_PAGE;
+    let rendering = false;
+    let pending = null;
+    let fitWidthMode = true;
+    let scale = 1;
+
+    function fitWidthScale(viewport) {
+      // Fit to viewport width while preserving aspect ratio; account for devicePixelRatio
+      const cssWidth = Math.min(window.innerWidth, document.documentElement.clientWidth);
+      const target = cssWidth; // px (CSS)
+      return target / viewport.width;
+    }
+
+    function render(num) {
+      rendering = true;
+      pdfDoc.getPage(num).then(page => {
+        const base = page.getViewport({ scale: 1 });
+        const useScale = fitWidthMode ? fitWidthScale(base) : scale;
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const vp = page.getViewport({ scale: useScale * dpr });
+
+        // Set canvas pixel size for crisp rendering
+        canvas.width = Math.floor(vp.width);
+        canvas.height = Math.floor(vp.height);
+
+        // Set CSS size (keeps aspect ratio; width fits screen, height auto)
+        canvas.style.width = (vp.width / dpr) + 'px';
+        canvas.style.height = (vp.height / dpr) + 'px';
+
+        const task = page.render({ canvasContext: ctx, viewport: vp });
+        task.promise.then(() => {
+          rendering = false;
+          if (pending !== null) { const n = pending; pending = null; render(n); }
+        });
+      });
+    }
+
+    function show(num) {
+      if (!pdfDoc) return;
+      if (num < 1 || num > pdfDoc.numPages) return;
+      current = num;
+      if (rendering) { pending = num; } else { render(num); }
+    }
+
+    // Load PDF
+    pdfjsLib.getDocument(pdfUrl).promise.then(pdf => {
+      pdfDoc = pdf;
+      show(current);
+    }).catch(err => {
+      console.error(err);
+      // Fallback: navigate directly to the PDF
+      location.replace(pdfUrl + '#page=1&zoom=page-width');
+    });
+
+    // Resize -> refit
+    addEventListener('resize', () => { fitWidthMode = true; render(current); });
+
+    // Swipe detection (horizontal only)
+    let startX=0, startY=0, t0=0;
+    const THRESHOLD = 50;      // px
+    const VERTICAL_TOL = 40;   // px
+    const TIME = 600;          // ms
+
+    document.addEventListener('touchstart', e => {
+      const t = e.changedTouches[0];
+      startX = t.clientX; startY = t.clientY; t0 = Date.now();
+    }, {passive:true});
+
+    document.addEventListener('touchend', e => {
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      const dt = Date.now() - t0;
+      if (dt < TIME && Math.abs(dx) > THRESHOLD && Math.abs(dy) < VERTICAL_TOL) {
+        if (dx < 0) show(current + 1); else show(current - 1);
+      }
+    }, {passive:true});
+
+    // Double-tap to toggle fit/zoom (optional, keeps UI無し)
+    let lastTap=0;
+    document.addEventListener('touchend', e => {
+      const now = Date.now();
+      if (now - lastTap < 300) { // double tap
+        fitWidthMode = !fitWidthMode;
+        if (!fitWidthMode) {
+          scale = 1.2; // start slightly zoomed
+        }
+        render(current);
+      }
+      lastTap = now;
+    }, {passive:true});
+  </script>
+</body>
+</html>
