@@ -5,129 +5,142 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <title>PDF Viewer</title>
   <style>
-    /* Full-bleed, no UI */
-    html, body {
-      margin: 0; padding: 0; height: 100%; background: #000; touch-action: pan-y; overscroll-behavior: none;
+    /* 全画面・余計なUIなし（最小限のナビだけ） */
+    html, body { margin:0; padding:0; height:100%; background:#000; touch-action: pan-y; overscroll-behavior:none; }
+    #stage { position:fixed; inset:0; display:grid; place-items:center; background:#000; }
+    canvas { display:block; width:100vw; height:auto; background:#000; }
+
+    /* 下部ナビ（左右ボタン＋中央ページ表記） */
+    .navbtn {
+      position: fixed; bottom: 12px; z-index: 5;
+      padding: 10px 14px; min-width: 72px;
+      font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Helvetica Neue", Arial, sans-serif;
+      color:#fff; background: rgba(0,0,0,.55);
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 10px;
+      -webkit-tap-highlight-color: transparent;
     }
-    #stage {
-      position: fixed; inset: 0; display: grid; place-items: center;
-      background: #000;
-    }
-    canvas {
-      display: block; width: 100vw; height: auto; background: #000;
+    .navbtn:active { transform: scale(0.98); }
+    .left  { left: 12px; }
+    .right { right: 12px; }
+    .counter {
+      position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
+      z-index: 5; padding: 8px 12px;
+      font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Helvetica Neue", Arial, sans-serif;
+      color:#fff; background: rgba(0,0,0,.45);
+      border:1px solid rgba(255,255,255,.18);
+      border-radius: 10px;
+      pointer-events: none; /* タップの邪魔をしない */
     }
   </style>
 </head>
 <body>
   <div id="stage"><canvas id="page"></canvas></div>
 
-  <!-- PDF.js from CDN -->
+  <!-- 下部UI -->
+  <button class="navbtn left"  id="prevBtn" aria-label="前のページ">戻る</button>
+  <div    class="counter" id="counter">– / –</div>
+  <button class="navbtn right" id="nextBtn" aria-label="次のページ">次へ</button>
+
+  <!-- PDF.js（CDN） -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script>
-    // ====== Config ======
-    const DEFAULT_FILE = 'info.pdf'; // 同じ階層に置くPDF名
-    const START_PAGE = 1;              // 初期ページ
-    // ====================
+    /* ===== 設定 ===== */
+    const DEFAULT_FILE = 'info.pdf';  // 同じ階層に置くPDF名
+    const START_PAGE   = 1;             // 初期ページ
+    /* ================ */
 
-    // Worker
+    // PDF.js Worker
     if (window['pdfjsLib']) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
 
-    const urlParams = new URLSearchParams(location.search);
-    const pdfUrl = urlParams.get('file') || DEFAULT_FILE;
-
-    const canvas = document.getElementById('page');
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const pdfUrl   = (new URLSearchParams(location.search)).get('file') || DEFAULT_FILE;
+    const canvas   = document.getElementById('page');
+    const ctx      = canvas.getContext('2d', { alpha: false });
+    const counter  = document.getElementById('counter');
+    const prevBtn  = document.getElementById('prevBtn');
+    const nextBtn  = document.getElementById('nextBtn');
 
     let pdfDoc = null;
     let current = START_PAGE;
     let rendering = false;
     let pending = null;
-    let fitWidthMode = true;
+    let fitWidthMode = true; // 画面幅フィット（比率保持）
     let scale = 1;
 
-    function fitWidthScale(viewport) {
-      // Fit to viewport width while preserving aspect ratio; account for devicePixelRatio
+    function fitWidthScale(viewport){
       const cssWidth = Math.min(window.innerWidth, document.documentElement.clientWidth);
-      const target = cssWidth; // px (CSS)
-      return target / viewport.width;
+      return cssWidth / viewport.width;
     }
-
-    function render(num) {
+    function updateCounter(){
+      counter.textContent = pdfDoc ? (current + ' / ' + pdfDoc.numPages) : '– / –';
+    }
+    function render(num){
       rendering = true;
-      pdfDoc.getPage(num).then(page => {
+      pdfDoc.getPage(num).then(page=>{
         const base = page.getViewport({ scale: 1 });
         const useScale = fitWidthMode ? fitWidthScale(base) : scale;
         const dpr = Math.max(1, window.devicePixelRatio || 1);
-        const vp = page.getViewport({ scale: useScale * dpr });
+        const vp  = page.getViewport({ scale: useScale * dpr });
 
-        // Set canvas pixel size for crisp rendering
-        canvas.width = Math.floor(vp.width);
+        // 高精細＋比率保持
+        canvas.width  = Math.floor(vp.width);
         canvas.height = Math.floor(vp.height);
-
-        // Set CSS size (keeps aspect ratio; width fits screen, height auto)
-        canvas.style.width = (vp.width / dpr) + 'px';
+        canvas.style.width  = (vp.width  / dpr) + 'px';
         canvas.style.height = (vp.height / dpr) + 'px';
 
         const task = page.render({ canvasContext: ctx, viewport: vp });
-        task.promise.then(() => {
+        task.promise.then(()=>{
           rendering = false;
-          if (pending !== null) { const n = pending; pending = null; render(n); }
+          updateCounter();
+          if (pending !== null){ const n = pending; pending = null; render(n); }
         });
       });
     }
-
-    function show(num) {
+    function show(num){
       if (!pdfDoc) return;
       if (num < 1 || num > pdfDoc.numPages) return;
       current = num;
-      if (rendering) { pending = num; } else { render(num); }
+      if (rendering) pending = num; else render(num);
     }
 
-    // Load PDF
-    pdfjsLib.getDocument(pdfUrl).promise.then(pdf => {
+    // 読み込み
+    pdfjsLib.getDocument(pdfUrl).promise.then(pdf=>{
       pdfDoc = pdf;
+      current = Math.min(Math.max(START_PAGE,1), pdfDoc.numPages);
+      updateCounter();
       show(current);
-    }).catch(err => {
-      console.error(err);
-      // Fallback: navigate directly to the PDF
+    }).catch(()=>{
+      // CDN等で失敗したらPDF本体へフォールバック
       location.replace(pdfUrl + '#page=1&zoom=page-width');
     });
 
-    // Resize -> refit
-    addEventListener('resize', () => { fitWidthMode = true; render(current); });
+    // 端末回転/サイズ変更時に幅フィット描画
+    addEventListener('resize', ()=>{ fitWidthMode = true; render(current); });
 
-    // Swipe detection (horizontal only)
-    let startX=0, startY=0, t0=0;
-    const THRESHOLD = 50;      // px
-    const VERTICAL_TOL = 40;   // px
-    const TIME = 600;          // ms
-
-    document.addEventListener('touchstart', e => {
-      const t = e.changedTouches[0];
-      startX = t.clientX; startY = t.clientY; t0 = Date.now();
+    // スワイプでページ送り
+    let sx=0, sy=0, t0=0;
+    const TH=50, VERT=40, TIME=600;
+    document.addEventListener('touchstart', e=>{
+      const t = e.changedTouches[0]; sx=t.clientX; sy=t.clientY; t0=Date.now();
+    }, {passive:true});
+    document.addEventListener('touchend', e=>{
+      const t=e.changedTouches[0], dx=t.clientX-sx, dy=t.clientY-sy, dt=Date.now()-t0;
+      if (dt<TIME && Math.abs(dx)>TH && Math.abs(dy)<VERT) { if (dx<0) show(current+1); else show(current-1); }
     }, {passive:true});
 
-    document.addEventListener('touchend', e => {
-      const t = e.changedTouches[0];
-      const dx = t.clientX - startX;
-      const dy = t.clientY - startY;
-      const dt = Date.now() - t0;
-      if (dt < TIME && Math.abs(dx) > THRESHOLD && Math.abs(dy) < VERTICAL_TOL) {
-        if (dx < 0) show(current + 1); else show(current - 1);
-      }
-    }, {passive:true});
+    // ボタン
+    prevBtn.addEventListener('click', ()=> show(current-1));
+    nextBtn.addEventListener('click', ()=> show(current+1));
 
-    // Double-tap to toggle fit/zoom (optional, keeps UI無し)
+    // ダブルタップで一時ズーム（UI無しでも拡大したい人向け）
     let lastTap=0;
-    document.addEventListener('touchend', e => {
-      const now = Date.now();
-      if (now - lastTap < 300) { // double tap
+    document.addEventListener('touchend', ()=>{
+      const now=Date.now();
+      if (now-lastTap<300){
         fitWidthMode = !fitWidthMode;
-        if (!fitWidthMode) {
-          scale = 1.2; // start slightly zoomed
-        }
+        if (!fitWidthMode) scale = 1.2;
         render(current);
       }
       lastTap = now;
